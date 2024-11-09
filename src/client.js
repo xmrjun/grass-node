@@ -17,6 +17,8 @@ export class GrassClient {
     this.connectionAttempts = 0;
     this.pointsMultiplier = 1.0;
     this.isReconnecting = false;
+    this.maxRetries = 5;
+    this.retryDelay = 10000;
   }
 
   async start() {
@@ -38,12 +40,21 @@ export class GrassClient {
         
         this.cleanup();
         this.isReconnecting = true;
-        logger.info('Initiating automatic reconnection...');
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        this.connectionAttempts++;
+        
+        const delay = Math.min(this.retryDelay * Math.pow(1.5, this.connectionAttempts - 1), 300000);
+        logger.info(`Initiating automatic reconnection in ${Math.round(delay/1000)}s...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        if (this.connectionAttempts >= this.maxRetries) {
+          logger.warn('Max retry attempts reached, resetting connection state...');
+          this.connectionAttempts = 0;
+          await new Promise(resolve => setTimeout(resolve, 60000));
+        }
       } catch (error) {
         logger.error(`Connection error: ${error.message}`);
         this.cleanup();
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay));
       }
     }
   }
@@ -96,7 +107,9 @@ export class GrassClient {
         'Origin': 'https://app.getgrass.io',
         'Sec-WebSocket-Version': '13',
         'Accept-Language': 'en-US,en;q=0.9'
-      }
+      },
+      handshakeTimeout: 30000,
+      maxPayload: 1024 * 1024
     };
 
     if (this.proxy) {
@@ -116,7 +129,6 @@ export class GrassClient {
       this.ws.once('open', () => {
         clearTimeout(timeout);
         this.isReconnecting = false;
-        this.connectionAttempts = 0;
         logger.info(`Connected via proxy: ${this.proxy}`);
         resolve();
       });
@@ -135,6 +147,12 @@ export class GrassClient {
           }
         } catch (error) {
           logger.error(`Failed to process message: ${error.message}`);
+        }
+      });
+
+      this.ws.on('ping', () => {
+        if (this.ws.readyState === WebSocket.OPEN) {
+          this.ws.pong();
         }
       });
     });
